@@ -47,6 +47,31 @@ typedef struct lhdr {
 __attribute__((used)) static const lhdr_t __load_header;
 
 __attribute__((always_inline, used)) inline
+static void __load_memcpy(void *dst, void *src, size_t size)
+{
+    uint8_t *to = (uint8_t *)dst;
+    uint8_t *from = (uint8_t *)src;
+
+    while (size > 0)
+    {
+        *to++ = *from++;
+        size--;
+    }
+}
+
+__attribute__((always_inline, used)) inline
+static void __load_memset(void *dst, uint8_t pattern, size_t size)
+{
+    uint8_t *to = (uint8_t *)dst;
+
+    while (size > 0)
+    {
+        *to++ = pattern;
+        size--;
+    }
+}
+
+__attribute__((always_inline, used)) inline
 static void __load_zero_rle(uint8_t *vma, uint8_t *lma, size_t memsize)
 {
     uint8_t *to = (uint8_t *)vma;
@@ -89,7 +114,7 @@ static int __load_segment(lhdr_t *const lhdr)
     switch (lhdr->method)
     {
         case NO_COMPRESSION:
-            memcpy(vma, lma, memsz - bss_sz);
+            __load_memcpy(vma, lma, memsz - bss_sz);
             break;
         case RW_ZERO_RLE:
             __load_zero_rle(vma, lma, memsz - bss_sz);
@@ -101,7 +126,7 @@ static int __load_segment(lhdr_t *const lhdr)
     }
 
     /* load .bss */
-    memset((uint8_t *)(vma + memsz - bss_sz), 0x00, bss_sz);
+    __load_memset((uint8_t *)(vma + memsz - bss_sz), 0x00, bss_sz);
 
     return 0;
 }
@@ -135,9 +160,21 @@ void _mainCRTStartup(void)
 {
     extern int main(void);
 
+#if   defined (__arm__) || defined(__thumb__)
     __asm (
         "ldr r0, =__load_header\r\n"
         "bl __load_program\r\n"
         "b main\r\n"
     );
+#elif defined (__riscv)
+    __asm (
+        "la a0, __load_header\r\n"
+        "call __load_program\r\n"
+        "li a0, 0\r\n"
+        "li a1, 0\r\n"
+        "call main"
+    );
+#else
+    #error "arch not supported!"
+#endif
 }
