@@ -1,68 +1,59 @@
-#include <stdint.h>
-#include <stdlib.h>
+/*
+ ***********************************************************************
+ *  Copyright (c) 2022 alex Yang
+ *
+ *  @file    startup_load.c
+ *  @brief   此文件为启动加载程序, 负责在进入用户main()函数前准备c runtime
+ *  @history
+ *   Version            Date            Author          Modification
+ *   V1.0.0             May-15-2022     null.yang       create file
+ *
+ *
+ ***********************************************************************
+ */
 
-#define LOAD_TABLE_BASE         (__data_start_base__)
-#define LOAD_TABLE_MAGIC        (0xDEADBEEF)
+#include "stddef.h"
+#include "stdint.h"
+#include "string.h"
 
-#ifndef LOAD_SEGMENT_MAX_NUM
-#define LOAD_SEGMENT_MAX_NUM    (16u)
+#if   defined ( __CC_ARM )
+    #defien __main __main
+#elif defined ( __GNUC__ )
+    #define __main _mainCRTStartup
+#elif defined ( __ICCARM__ )
+    #define __main __iar_program_start
 #endif
 
-typedef enum
-{
-    BSS_SET_ZERO    = 0,
-    NO_COMPRESSION  = 1,
-    ZERO_RLE        = 2,
-    LZ77            = 3,
-} rw_compress_t;
+#define LOAD_HDR_BASE   (__data_start_base__)
+#define LOAD_HDR_MAGIC  (0xFEE1DEAD)
 
-typedef struct
-{
-    uint32_t magic;
-    uint32_t table_size;
-    uint32_t item_size;
-    uint32_t crc32;
-} rw_header_t;
+typedef struct phdr {
+    uint32_t type;      /* Segment type */
+    uint32_t offset;    /* Segment file offset */
+    uint32_t vaddr;     /* Segment virtual address */
+    uint32_t paddr;     /* Segment physical address */
+    uint32_t filesz;    /* Segment size in file */
+    uint32_t memsz;     /* Segment size in memory */
+    uint32_t flags;     /* Segment flags */
+    uint32_t align;     /* Segment alignment */
+} phdr_t;
 
-typedef struct
-{
-    uint8_t      *vma;
-    uint8_t      *lma;
-    size_t        memsize;
-    rw_compress_t method;
-} rw_item_t;
+typedef struct hdr {
+    uint32_t  magic;
+    phdr_t   *phdr;
+    uint32_t  phnum;
+    uint32_t  reserved;
+} hdr_t;
 
-typedef struct
-{
-    rw_header_t header;
-    rw_item_t   items[LOAD_SEGMENT_MAX_NUM];
-} rw_table_t;
+typedef enum load_method {
+    NO_COMPRESSION = 0,
+    BSS_SET_ZERO   = 1,
+    RW_ZERO_RLE    = 2,
+    RW_LZ77        = 3,
+} load_method_t;
 
-inline static void __load_memset(void *dst, uint8_t pattern, size_t size)
-{
-    uint8_t *to = (uint8_t *)dst;
-
-    while (size > 0)
-    {
-        *to++ = pattern;
-        size--;
-    }
-}
-
-inline static void __load_memcpy(void *dst, void *src, size_t size)
-{
-    uint8_t *to = (uint8_t *)dst;
-    uint8_t *from = (uint8_t *)src;
-
-    while (size > 0)
-    {
-        *to++ = *from++;
-        size--;
-    }
-}
-
-// TODO: need zero_rle decompress implementation
-inline static void __load_zero_rle(uint8_t *vma, uint8_t *lma, size_t memsize)
+__attribute__((always_inline)) inline 
+static void __load_zero_rle(uint8_t *vma, uint8_t *lma, size_t memsize)
 {
     uint8_t *to = (uint8_t *)vma;
     uint8_t *from = (uint8_t *)lma;
@@ -85,54 +76,77 @@ inline static void __load_zero_rle(uint8_t *vma, uint8_t *lma, size_t memsize)
             }
         }
     }
-
-    return;
 }
 
-// TODO: need lz77 decompress implementation
-inline static void __load_lz77(uint8_t *vma, uint8_t *lma, size_t memsize)
+__attribute__((always_inline)) inline 
+static int __load_segment(phdr_t *phdr)
 {
-    return;
-}
-
-inline static void load_segments(rw_item_t *segment)
-{
-    switch (segment->method)
+    if (NULL == phdr)
     {
-        case BSS_SET_ZERO:
-            __load_memset(segment->vma, 0x00, segment->memsize);
-            break;
+        return -1;
+    }
+
+    uint8_t *vma = (uint8_t *)phdr->vaddr;
+    uint8_t *lma = (uint8_t *)phdr->paddr;
+    size_t memsz = (size_t)phdr->memsz;
+
+    switch (phdr->flags)
+    {
         case NO_COMPRESSION:
-            __load_memcpy(segment->vma, segment->lma, segment->memsize);
+            memcpy(vma, lma, memsz);
             break;
-        case ZERO_RLE:
-            __load_zero_rle(segment->vma, segment->lma, segment->memsize);
+        case BSS_SET_ZERO:
+            memset(vma, 0x00, memsz);
             break;
-        case LZ77:
+        case RW_ZERO_RLE:
+            __load_zero_rle(vma, lma, memsz);
             break;
+        case RW_LZ77: /* no break, return error immediately */
         default:
-            while (1);
+            return -1;
     }
+
+    return 0;
 }
 
-inline static void startup_load(void)
+__attribute__((always_inline)) inline 
+static int __load_program(hdr_t *hdr)
 {
-    extern char LOAD_TABLE_BASE;
-    rw_table_t *table = (rw_table_t *)&LOAD_TABLE_BASE;
-
-    for (uint32_t i = 0; i < (table->header.table_size/table->header.item_size); i++)
+    if (NULL == hdr)
     {
-        load_segments(&table[i]);
+        return -1;
     }
+
+    if (LOAD_HDR_MAGIC != hdr->magic)
+    {
+        return -2;
+    }
+    
+    for (size_t i = 0; i < hdr->phnum; i++)
+    {
+        phdr_t *phdr = &hdr->phdr[i];
+        if (__load_segment(phdr))
+        {
+            return -3;
+        }
+    }
+
+    return 0;
 }
 
-__attribute__((naked)) void _mainCRTstartup(void)
+void _mainCRTstartup(void);
+void _mainCRTstartup(void)
 {
+    extern int LOAD_HDR_BASE; 
     extern int main(void);
+    
+    hdr_t *__hdr = (hdr_t *)LOAD_HDR_BASE;
+    if (__load_program(__hdr))
+    {
+        while (1);
+    }
 
-    startup_load();
-
-    __asm(
-        "b main"
+    __asm (
+        "b main\r\n"
     );
 }
