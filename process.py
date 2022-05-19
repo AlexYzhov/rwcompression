@@ -1,5 +1,4 @@
-import sys, struct, io
-from os import path
+import os, sys, struct, io, ctypes
 from elftools.elf.elffile import ELFFile
 from prettytable import PrettyTable
 
@@ -10,7 +9,8 @@ class Method(object):
     RW_LZ77        = 3
 
 class LoadDescriptor(object):
-    def __init__(self, segment, vma = 0, lma = 0, filesz = 0, memsz = 0, method = Method.NO_COMPRESSION):
+    def __init__(self, index, segment, vma = 0, lma = 0, filesz = 0, memsz = 0, method = Method.NO_COMPRESSION):
+        self.index   = index
         self.segment = segment
         self.vma     = vma
         self.lma     = lma
@@ -19,17 +19,18 @@ class LoadDescriptor(object):
         self.method  = method
 
 class RWCompression(object):
-    def __init__(self, segment):
-        __vma    = segment.header['p_vaddr']
-        __lma    = segment.header['p_paddr']
-        __filesz = segment.header['p_filesz']
-        __memsz  = segment.header['p_memsz']
+    def __init__(self, index, segment):
+        __vma    = segment['p_vaddr']
+        __lma    = segment['p_paddr']
+        __filesz = segment['p_filesz']
+        __memsz  = segment['p_memsz']
         __stream = io.BytesIO(segment.data())
         __data   = __stream.read(__filesz)
 
         self.type = 'rw'
         self.data = __data
         self.descriptor = LoadDescriptor(
+            index   = index,
             segment = segment,
             vma     = __vma,
             lma     = 0,
@@ -77,18 +78,19 @@ class RWCompression(object):
         return (input, len(input), Method.RW_LZ77)
 
 class BSSZeros(object):
-    def __init__(self, segment):
-        __vma    = segment.header['p_vaddr']
-        __lma    = segment.header['p_paddr']
-        __filesz = segment.header['p_filesz']
-        __memsz  = segment.header['p_memsz']
+    def __init__(self, index, segment):
+        __vma    = segment['p_vaddr']
+        __lma    = segment['p_paddr']
+        __filesz = segment['p_filesz']
+        __memsz  = segment['p_memsz']
         __bss_sz = __memsz - __filesz
         __stream = io.BytesIO(segment.data())
 
-        __stream.seek(__filesz)
+        __stream.seek(__filesz, 0)
         self.type = 'bss'
         self.data = __stream.read(__bss_sz)
         self.descriptor = LoadDescriptor(
+            index   = index,
             segment = segment,
             vma     = __vma + __filesz,
             lma     = 0,
@@ -97,8 +99,15 @@ class BSSZeros(object):
             method  = Method.BSS_SET_ZERO
         )
 
-def genimg(fin, blocks):
-    img = fin.read()
+def find_symbol(elf, name):
+    for section in elf.iter_sections(type='SHT_SYMTAB'):
+        symbols = section.get_symbol_by_name(name)
+        if symbols:
+            for symbol in symbols:
+                return symbol if symbol.entry['st_info']['bind'] == 'STB_GLOBAL' else None
+    return None
+
+def genimg(base, blocks):
     hdr  = bytearray(0)
     phdr = bytearray(0)
     data = bytearray(0)
@@ -144,17 +153,49 @@ def genimg(fin, blocks):
                                        descriptor.lma,
                                        descriptor.filesz,
                                        descriptor.memsz,
-                                       segment.header['p_flags'],
-                                       segment.header['p_align']))
+                                       segment['p_flags'],
+                                       segment['p_align']))
         data += bytearray(block.data)
         offset += len(block.data)
 
-    # Collect compressed.bin
+    # report
+    print('__load_base__: ' + hex(base))
+
+    # Collect compressed binary
     output += hdr
     output += phdr
     output += data
-    with open("compressed.bin", "wb") as fout:
-        fout.write(output)
+    return output
+
+def make_elf(fin, blocks, image):
+    elf = ELFFile(fin)
+    for block in blocks:
+        if block.descriptor.filesz:
+            segment = block.descriptor.segment
+            for section in elf.iter_sections(type='SHT_PROGBITS'):
+                # modify section header (shdr)
+                if segment.section_in_segment(section) and section['sh_addr'] == segment['p_vaddr']:
+                    __sec_index = elf.get_section_index(section.name)
+                    __sec_offset = elf._section_offset(__sec_index) + 20
+                    __sec_filesz = ctypes.c_uint32(block.descriptor.filesz)
+                    fin.seek(__sec_offset, 0)
+                    fin.write(__sec_filesz)
+
+            # modify segment header (phdr)
+            __seg_index  = block.descriptor.index
+            __seg_offset = elf._segment_offset(__seg_index) + 16
+            __seg_filesz = ctypes.c_uint32(block.descriptor.filesz)
+            fin.seek(__seg_offset, 0)
+            fin.write(__seg_filesz)
+
+            # modify segment image
+            __img_start = segment['p_offset']
+            __img_end   = __img_start + segment['p_filesz']
+            fin.seek(__img_start, 0)
+            fin.write(image)
+            assert(fin.tell() <= __img_end)
+            return
+    return
 
 def report(blocks):
     report = PrettyTable()
@@ -168,22 +209,41 @@ def report(blocks):
         vma  = descriptor.vma
         lma  = descriptor.lma
         newsz = descriptor.filesz
-        oldsz = segment.header['p_filesz'] if block.type == 'rw' else segment.header['p_memsz'] - segment.header['p_filesz']
+        oldsz = segment['p_filesz'] if block.type == 'rw' else segment['p_memsz'] - segment['p_filesz']
         ratio = "{:.2%}".format(newsz/oldsz)
         method = descriptor.method
         report.add_row([block.type, hex(vma), hex(lma), newsz, oldsz, ratio, method])
     print(report)
 
 def process(elffile):
-    with open(elffile, 'rb') as fin:
-        blocks = []
-        for segment in ELFFile(fin).iter_segments(type='PT_LOAD'):
-            if segment.header['p_vaddr'] != segment.header['p_paddr']:
-                blocks.append(RWCompression(segment))
-            if segment.header['p_memsz'] != segment.header['p_filesz']:
-                blocks.append(BSSZeros(segment))
-        genimg(fin, blocks)
+    with open(elffile, 'r+b') as fin:
+        # foreach and execute data compression for rw segments
+        (elf, blocks, rosz_limit, rwsz_limit) = (ELFFile(fin), [], 0, 0)
+        for index in range(elf.num_segments()):
+            segment = elf.get_segment(index)
+            if segment['p_type'] == 'PT_LOAD':
+                if segment['p_vaddr'] == segment['p_paddr']:
+                    # segment doesn't need data load
+                    if segment['p_vaddr'] + segment['p_filesz'] > rosz_limit:
+                        rosz_limit = segment['p_vaddr'] + segment['p_filesz']
+                else:
+                    # segment need data load
+                    blocks.append(RWCompression(index, segment))
+                    rwsz_limit += segment['p_filesz']
+                    # split bss section
+                    if segment['p_memsz'] != segment['p_filesz']:
+                        blocks.append(BSSZeros(index, segment))
+
+        # print compression report
         report(blocks)
+
+        # generate compressed binary
+        image = genimg(rosz_limit, blocks)
+        if len(image) <= rwsz_limit:
+            make_elf(fin, blocks, image)
+        else:
+            print('Error: RW size exeeds the limit: ' + hex(rwsz_limit))
+            return
 
 if __name__ == '__main__':
     elffile = sys.argv[1]
