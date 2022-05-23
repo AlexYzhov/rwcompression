@@ -24,26 +24,7 @@
     #define __main __iar_program_start
 #endif
 
-#define LOAD_HDR_BASE   (__data_start_base__)
 #define LOAD_HDR_MAGIC  (0xFEE1DEAD)
-
-typedef struct phdr {
-    uint32_t type;      /* Segment type */
-    uint32_t offset;    /* Segment file offset */
-    uint32_t vaddr;     /* Segment virtual address */
-    uint32_t paddr;     /* Segment physical address */
-    uint32_t filesz;    /* Segment size in file */
-    uint32_t memsz;     /* Segment size in memory */
-    uint32_t flags;     /* Segment flags */
-    uint32_t align;     /* Segment alignment */
-} phdr_t;
-
-typedef struct hdr {
-    uint32_t  magic;
-    phdr_t   *phdr;
-    uint32_t  phnum;
-    uint32_t  reserved;
-} hdr_t;
 
 typedef enum load_method {
     NO_COMPRESSION = 0,
@@ -52,7 +33,20 @@ typedef enum load_method {
     RW_LZ77        = 3,
 } load_method_t;
 
-__attribute__((always_inline)) inline 
+typedef struct lhdr {
+    uint32_t prev;      /* previous lhdr lma */
+    uint32_t method;    /* Segment method */
+    uint32_t vaddr;     /* Segment virtual address */
+    uint32_t paddr;     /* Segment physical address */
+    uint32_t memsz;     /* Segment size in file */
+    uint32_t rw_sz;     /* Segment size in file (.data) */
+    uint32_t bss_sz;    /* Segment size in file (.bss) */
+    uint32_t reserved;  /* reserved datafield */
+} lhdr_t;
+
+__attribute__((used)) static const lhdr_t __load_header;
+
+__attribute__((always_inline, used)) inline
 static void __load_zero_rle(uint8_t *vma, uint8_t *lma, size_t memsize)
 {
     uint8_t *to = (uint8_t *)vma;
@@ -78,58 +72,56 @@ static void __load_zero_rle(uint8_t *vma, uint8_t *lma, size_t memsize)
     }
 }
 
-__attribute__((always_inline)) inline 
-static int __load_segment(phdr_t *phdr)
+__attribute__((always_inline, used)) inline
+static int __load_segment(lhdr_t *const lhdr)
 {
-    if (NULL == phdr)
+    if (NULL == lhdr)
     {
         return -1;
     }
 
-    uint8_t *vma = (uint8_t *)phdr->vaddr;
-    uint8_t *lma = (uint8_t *)phdr->paddr;
-    size_t memsz = (size_t)phdr->memsz;
+    uint8_t *vma  = (uint8_t *)lhdr->vaddr;
+    uint8_t *lma  = (uint8_t *)lhdr->paddr;
+    size_t memsz  = (size_t)lhdr->memsz;
+    size_t rw_sz  = (size_t)lhdr->rw_sz;
+    size_t bss_sz = (size_t)lhdr->bss_sz;
 
-    switch (phdr->flags)
+    /* load .data */
+    switch (lhdr->method)
     {
         case NO_COMPRESSION:
-            memcpy(vma, lma, memsz);
-            break;
-        case BSS_SET_ZERO:
-            memset(vma, 0x00, memsz);
+            memcpy(vma, lma, memsz - bss_sz);
             break;
         case RW_ZERO_RLE:
-            __load_zero_rle(vma, lma, memsz);
+            __load_zero_rle(vma, lma, memsz - bss_sz);
             break;
-        case RW_LZ77: /* no break, return error immediately */
+        case BSS_SET_ZERO:  /* no break, return error immediately */
+        case RW_LZ77:       /* no break, return error immediately */
         default:
             return -1;
     }
 
+    /* load .bss */
+    memset((uint8_t *)(vma + memsz - bss_sz), 0x00, bss_sz);
+
     return 0;
 }
 
-__attribute__((always_inline)) inline 
-static int __load_program(hdr_t *hdr)
+__attribute__((always_inline, used)) inline
+static int __load_program(lhdr_t *lhdr)
 {
-    if (NULL == hdr)
+    if (NULL == lhdr)
     {
         return -1;
     }
 
-    if (LOAD_HDR_MAGIC != hdr->magic)
-    {
-        return -2;
-    }
-    
-    for (size_t i = 0; i < hdr->phnum; i++)
-    {
-        phdr_t *phdr = &hdr->phdr[i];
-        if (__load_segment(phdr))
+    do {
+        lhdr = (lhdr_t *)lhdr->prev;
+        if (__load_segment(lhdr))
         {
-            return -3;
+            return -2;
         }
-    }
+    } while (lhdr);
 
     return 0;
 }
@@ -137,16 +129,11 @@ static int __load_program(hdr_t *hdr)
 void _mainCRTstartup(void);
 void _mainCRTstartup(void)
 {
-    extern int LOAD_HDR_BASE; 
     extern int main(void);
-    
-    hdr_t *__hdr = (hdr_t *)LOAD_HDR_BASE;
-    if (__load_program(__hdr))
-    {
-        while (1);
-    }
 
     __asm (
+        "ldr r0, =__load_header\r\n"
+        "bl __load_program\r\n"
         "b main\r\n"
     );
 }
