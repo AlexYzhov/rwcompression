@@ -5,7 +5,7 @@ from elftools.elf.elffile import ELFFile
 from prettytable import PrettyTable
 
 # Defines Compression Methods
-Method = Enum('CompresstionMethods', ('NO_COMPRESSION', 'BSS_SET_ZERO', 'RW_ZERO_RLE', 'RW_LZ77'))
+Method = Enum('CompresstionMethods', {'NO_COMPRESSION':0, 'BSS_SET_ZERO':1, 'RW_ZERO_RLE':2, 'RW_LZ77':3})
 
 class LoadSegment(object):
     def __init__(self, index, segment):
@@ -32,11 +32,11 @@ class LoadSegment(object):
                 count = 1
             else:
                 if val == 0 and input[i - 1] == 0:
-                    if count + 1 < 255:
+                    if count < 255:
                         count += 1
                     else:
-                        output.append(0)
                         output.append(count)
+                        output.append(0)
                         count = 1
                 else:
                     if input[i - 1] == 0:
@@ -57,16 +57,12 @@ class LoadSegment(object):
         # define param
         ptr    = 0 if prev is None else prev.segment['p_paddr']
         vma    = self.segment['p_vaddr']
-        lma    = self.segment['p_paddr']
+        lma    = self.segment['p_paddr'] + 32
         memsz  = self.segment['p_memsz']
         method = self.load[0]
         data   = self.load[1]
         rw_sz  = self.load[2]
         bss_sz = self.load[3]
-
-        # define data stream
-        lhdr = bytearray(0)
-        data = bytearray(0)
 
         # generate lhdr in segment
         '''
@@ -81,15 +77,15 @@ class LoadSegment(object):
                 uint32_t reserved;  /* reserved datafield */
             } lhdr_t;
         '''
-        lhdr += struct.pack('IIIIIIII',
-                             ptr,
-                             method.value,
-                             vma,
-                             lma,
-                             memsz,
-                             rw_sz,
-                             bss_sz,
-                             0)
+        lhdr = struct.pack('IIIIIIII',
+                            ptr,
+                            method.value,
+                            vma,
+                            lma,
+                            memsz,
+                            rw_sz,
+                            bss_sz,
+                            0)
 
         # modify filesz in section header for debug compability (shdr)
         for section in elf.iter_sections(type='SHT_PROGBITS'):
@@ -112,8 +108,8 @@ class LoadSegment(object):
         __image_start = self.segment['p_offset']
         __image_end   = self.segment['p_filesz'] + __image_start
         elf.stream.seek(__image_start, 0)
-        elf.stream.write(lhdr)
-        elf.stream.write(data)
+        elf.stream.write(bytearray(lhdr))
+        elf.stream.write(bytearray(data))
         assert elf.stream.tell() <= __image_end, 'segment size overflows!'
 
         # return self for info collection

@@ -83,7 +83,6 @@ static int __load_segment(lhdr_t *const lhdr)
     uint8_t *vma  = (uint8_t *)lhdr->vaddr;
     uint8_t *lma  = (uint8_t *)lhdr->paddr;
     size_t memsz  = (size_t)lhdr->memsz;
-    size_t rw_sz  = (size_t)lhdr->rw_sz;
     size_t bss_sz = (size_t)lhdr->bss_sz;
 
     /* load .data */
