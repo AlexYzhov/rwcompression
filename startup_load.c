@@ -125,8 +125,13 @@ static int __load_program(lhdr_t *lhdr)
     return 0;
 }
 
-void _mainCRTstartup(void);
-void _mainCRTstartup(void)
+/*
+ * Make sure _mainCRTStartup() procedure is stack-less,
+ *   (Subroutines are all force inlined in call graph)
+ * Otherwise memset .bss segment to zero may corrupt call frame itself
+ */
+void _mainCRTStartup(void);
+void _mainCRTStartup(void)
 {
     extern int main(void);
 

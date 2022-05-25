@@ -1,4 +1,5 @@
-import os, sys, ctypes, struct, shutil
+import sys, ctypes, struct, shutil
+from os.path import join, dirname
 from enum import Enum
 from elftools.elf.sections import Symbol
 from elftools.elf.elffile import ELFFile
@@ -49,6 +50,7 @@ class LoadSegment(object):
         return (Method.RW_ZERO_RLE, output, len(output))
 
     def __lz77(self, input):
+        # FIXME: not supported yet
         return (Method.RW_LZ77, input, len(input))
 
     def patch(self, elf, prev):
@@ -57,7 +59,7 @@ class LoadSegment(object):
         # define param
         ptr    = 0 if prev is None else prev.segment['p_paddr']
         vma    = self.segment['p_vaddr']
-        lma    = self.segment['p_paddr'] + 32
+        lma    = self.segment['p_paddr'] + 32 # 32 == sizeof(lhdr)
         memsz  = self.segment['p_memsz']
         method = self.load[0]
         data   = self.load[1]
@@ -92,14 +94,14 @@ class LoadSegment(object):
             if self.segment.section_in_segment(section):
                 if section['sh_addr'] == self.segment['p_vaddr']:
                     __section_index  = elf.get_section_index(section.name)
-                    __section_offset = elf._section_offset(__section_index) + 20
+                    __section_offset = elf._section_offset(__section_index) + 20 # 20 == offset of 'sh_size' in shdr
                     __section_filesz = ctypes.c_uint32(rw_sz + len(lhdr))
                     elf.stream.seek(__section_offset, 0)
                     elf.stream.write(__section_filesz)
 
         # modify filesz in segment header for debug compability (phdr)
         __segment_index  = self.segindex
-        __segment_offset = elf._segment_offset(__segment_index) + 16
+        __segment_offset = elf._segment_offset(__segment_index) + 16 # 16 == offset of 'p_filesz' in phdr
         __segment_filesz = ctypes.c_uint32(rw_sz + len(lhdr))
         elf.stream.seek(__segment_offset, 0)
         elf.stream.write(__segment_filesz)
@@ -161,6 +163,7 @@ def __report(blocks):
     report.title = 'RW/BSS Report:'
     report.field_names = ['index', 'type', 'vma', 'lma', 'newsz', 'oldsz', 'ratio', 'method']
     report.align = 'l'
+
     for index in range(len(blocks)):
         block  = blocks[index]
         method = block.load[0]
@@ -175,12 +178,13 @@ def __report(blocks):
             oldsz = block.segment['p_filesz']
             ratio = "{:.2%}".format(newsz/oldsz)
             report.add_row([index, 'rw', hex(vma), hex(lma), newsz, oldsz, ratio, method.name])
+
         if bss_sz > 0:
             newsz = 0
             oldsz = bss_sz
             ratio = "{:.2%}".format(newsz/oldsz)
             report.add_row([index, 'bss', hex(vma), hex(lma), newsz, oldsz, ratio, Method.BSS_SET_ZERO.name])
-            pass
+
     print(report) if len(blocks) else None
 
 def process(elffile):
@@ -197,7 +201,7 @@ def process(elffile):
 if __name__ == '__main__':
     # Prepare backup image
     input  = sys.argv[1]
-    output = sys.argv[2] if len(sys.argv) == 3 else os.path.dirname(sys.argv[1]) + 'patched.elf'
+    output = sys.argv[2] if len(sys.argv) == 3 else join(dirname(input), 'patched.elf')
     shutil.copy(input, output)
 
     # Process image
