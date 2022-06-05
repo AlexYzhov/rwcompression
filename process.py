@@ -126,7 +126,10 @@ def __find_symbol(elf, name):
     assert isinstance(elf, ELFFile), 'not a ELFFile!'
     for section in elf.iter_sections(type='SHT_SYMTAB'):
         symbols = section.get_symbol_by_name(name)
-        return symbols[0] if len(symbols) == 1 else None
+        if symbols is not None:
+            return symbols[0] if len(symbols) == 1 else None
+        else:
+            return None;
     return None
 
 def __patch(elf, prev):
