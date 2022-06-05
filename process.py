@@ -56,6 +56,11 @@ class LoadSegment(object):
     def patch(self, elf, prev):
         assert isinstance(elf, ELFFile), 'not a ELFFile!'
 
+        # skip segment without rw image
+        if 0 == self.segment['p_filesz']:
+            print("skip patching segment without rw image at 0x%x" % (self.segment['p_vaddr']))
+            return self
+
         # define param
         ptr    = 0 if prev is None else prev.segment['p_paddr']
         vma    = self.segment['p_vaddr']
