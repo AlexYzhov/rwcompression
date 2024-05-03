@@ -107,26 +107,28 @@ static int __load_segment(lhdr_t *const lhdr)
 
     uint8_t *vma  = (uint8_t *)lhdr->vaddr;
     uint8_t *lma  = (uint8_t *)lhdr->paddr;
-    size_t memsz  = (size_t)lhdr->memsz;
-    size_t bss_sz = (size_t)lhdr->bss_sz;
+    size_t mem_sz  = (size_t)lhdr->memsz;        /* total size after decompression (.data + .bss) */
+    size_t bss_sz = (size_t)lhdr->bss_sz;       /* size of .bss part after decompression */
+    size_t data_sz = (size_t)mem_sz - bss_sz;    /* size of .data part after decompression */
 
     /* load .data */
     switch (lhdr->method)
     {
         case NO_COMPRESSION:
-            __load_memcpy(vma, lma, memsz - bss_sz);
+            __load_memcpy(vma, lma, data_sz);
             break;
         case RW_ZERO_RLE:
-            __load_zero_rle(vma, lma, memsz - bss_sz);
+            __load_zero_rle(vma, lma, data_sz);
             break;
-        case BSS_SET_ZERO:  /* no break, return error immediately */
+        case BSS_SET_ZERO:
+            break;
         case RW_LZ77:       /* no break, return error immediately */
         default:
             return -1;
     }
 
     /* load .bss */
-    __load_memset((uint8_t *)(vma + memsz - bss_sz), 0x00, bss_sz);
+    __load_memset((uint8_t *)(vma + data_sz), 0x00, bss_sz);
 
     return 0;
 }
