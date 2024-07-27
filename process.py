@@ -12,8 +12,8 @@ class LoadSegment(object):
     def __init__(self, index, segment):
         self.segindex = index
         self.segment  = segment
-                      # (method,                data, rw_sz,               bss_sz,                                 )
-        self.load     = (Method.NO_COMPRESSION, None, segment['p_filesz'], segment['p_memsz'] - segment['p_filesz'])
+        # load = (method, data, rw_sz, bss_sz,)
+        self.load = (Method.NO_COMPRESSION, list(segment.data()), segment['p_filesz'], segment['p_memsz'] - segment['p_filesz'])
 
         # add rw segment
         __compressions = (self.__no_compress, self.__zero_rle_compress, self.__lz77)
@@ -23,7 +23,7 @@ class LoadSegment(object):
                 self.load = (method, data, rw_sz, segment['p_memsz'] - segment['p_filesz'])
 
     def __no_compress(self, input):
-        return (Method.NO_COMPRESSION, input, len(input))
+        return (Method.NO_COMPRESSION, list(input), len(input))
 
     def __zero_rle_compress(self, input):
         (count, output) = (0, [])
@@ -50,8 +50,8 @@ class LoadSegment(object):
         return (Method.RW_ZERO_RLE, output, len(output))
 
     def __lz77(self, input):
-        # FIXME: not supported yet
-        return (Method.RW_LZ77, input, len(input))
+        # FIXME: not supported yet, use NO_COMPRESSION instead
+        return self.__no_compress(input)
 
     def patch(self, elf, prev):
         assert isinstance(elf, ELFFile), 'not a ELFFile!'
@@ -117,7 +117,7 @@ class LoadSegment(object):
         elf.stream.seek(__image_start, 0)
         elf.stream.write(bytearray(lhdr))
         elf.stream.write(bytearray(data))
-        assert elf.stream.tell() <= __image_end, 'segment size overflows!'
+        assert elf.stream.tell() <= __image_end, 'compression not works, segment size overflows!'
 
         # return self for info collection
         return self
