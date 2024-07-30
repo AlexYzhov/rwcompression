@@ -11,7 +11,7 @@ Method = Enum('CompresstionMethods', {'NO_COMPRESSION':0, 'BSS_SET_ZERO':1, 'RW_
 class LoadSegment(object):
     def __init__(self, index, segment):
         self.segindex = index
-        self.segment  = segment
+        self.segment = segment
         # load = (method, data, rw_sz, bss_sz,)
         self.load = (Method.NO_COMPRESSION, list(segment.data()), segment['p_filesz'], segment['p_memsz'] - segment['p_filesz'])
 
@@ -122,6 +122,31 @@ class LoadSegment(object):
         # return self for info collection
         return self
 
+def __merge_segments(LoadSegments):
+    segments = {}
+    for LoadSegment in LoadSegments:
+        if (LoadSegment.load[0] == Method.NO_COMPRESSION):
+            lma = LoadSegment.segment['p_paddr']
+            if lma in segments:
+                segments[lma].append(LoadSegment)
+            else:
+                segments[lma] = [LoadSegment]
+    for lma, sections in segments.items():
+        if len(sections) > 1:
+            current_base, current_offset = sections[0].segment['p_vaddr'], sections[0].segment['p_memsz']
+            for section in sections:
+                if (section.segment['p_vaddr'] == current_base + current_offset):
+                    # merge sections mapped with the same segment
+                    current_offset += section.segment['p_memsz']
+                    method = sections[0].load[0]
+                    data   = sections[0].load[1]
+                    rw_sz  = sections[0].load[2] + section.segment['p_filesz']
+                    bss_sz = sections[0].load[3] + section.segment['p_memsz'] - section.segment['p_filesz']
+                    sections[0].load = (method, data, rw_sz, bss_sz)
+                    segments[lma].remove(section)
+                    LoadSegments.remove(section)
+    return LoadSegments
+
 def __find_symbol(elf, name):
     assert isinstance(elf, ELFFile), 'not a ELFFile!'
     for section in elf.iter_sections(type='SHT_SYMTAB'):
@@ -198,11 +223,18 @@ def __report(blocks):
 def process(elffile):
     with open(elffile, 'r+b') as fin:
         (elf, info, prev) = (ELFFile(fin), [], None)
+        # 1st pass: match segments that need to load
+        segments = []
         for index in range(elf.num_segments()):
             segment = elf.get_segment(index)
             if segment['p_type'] == 'PT_LOAD' and segment['p_vaddr'] != segment['p_paddr']:
-                prev = LoadSegment(index, segment).patch(elf, prev)
-                info.append(prev)
+                segments.append(LoadSegment(index, segment))
+        # 2nd pass: merge segments point to sections with continuous memory
+        segments = __merge_segments(segments)
+        # 3rd pass: patch segments
+        for segment in segments:
+            prev = segment.patch(elf, prev)
+            info.append(prev)
         __patch(elf, prev)
         __report(info)
 
