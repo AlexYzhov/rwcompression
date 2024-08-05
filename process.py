@@ -98,26 +98,27 @@ class LoadSegment(object):
         for section in elf.iter_sections(type='SHT_PROGBITS'):
             if self.segment.section_in_segment(section):
                 if section['sh_addr'] == self.segment['p_vaddr']:
-                    __section_index  = elf.get_section_index(section.name)
+                    __section_name = section.name
+                    __section_index = elf.get_section_index(__section_name)
                     __section_offset = elf._section_offset(__section_index) + 20 # 20 == offset of 'sh_size' in shdr
                     __section_filesz = ctypes.c_uint32(rw_sz + len(lhdr))
                     elf.stream.seek(__section_offset, 0)
                     elf.stream.write(__section_filesz)
 
         # modify filesz in segment header for debug compability (phdr)
-        __segment_index  = self.segindex
+        __segment_index = self.segindex
         __segment_offset = elf._segment_offset(__segment_index) + 16 # 16 == offset of 'p_filesz' in phdr
-        __segment_filesz = ctypes.c_uint32(rw_sz + len(lhdr))
+        __segment_filesz = rw_sz + len(lhdr)
         elf.stream.seek(__segment_offset, 0)
-        elf.stream.write(__segment_filesz)
+        elf.stream.write(ctypes.c_uint32(__segment_filesz))
 
         # patch segment image
         __image_start = self.segment['p_offset']
-        __image_end   = self.segment['p_filesz'] + __image_start
+        __image_end = self.segment['p_filesz'] + __image_start
         elf.stream.seek(__image_start, 0)
         elf.stream.write(bytearray(lhdr))
         elf.stream.write(bytearray(data))
-        assert elf.stream.tell() <= __image_end, 'compression not works, segment size overflows!'
+        assert elf.stream.tell() <= __image_end, '%s compression at segment[%s]: "%s" not works, filesz %s > %s cause segment data overflow!' % (method.name, __segment_index, __section_name, hex(__segment_filesz), hex(self.segment['p_filesz']))
 
         # return self for info collection
         return self
